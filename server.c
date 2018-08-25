@@ -379,13 +379,18 @@ void sys_truncate(int cfd, int len, int size)
 	write(cfd, rv, sizeof(rv));
 }
 
+void  sys_check(int cfd){
+	int rv = 1;
+	write(cfd, &rv, sizeof(rv));
+}
+
 void client_handler(int cfd)
 {
 	while (1)
 	{
-		int info[6];
+		int info[INFO_SIZE];
 
-		read(cfd, info, sizeof(int) * 5);
+		read(cfd, info, sizeof(int) * INFO_SIZE);
 
 		switch (info[0])
 		{
@@ -427,6 +432,9 @@ void client_handler(int cfd)
 			break;
 		case truncate_num:
 			sys_truncate(cfd, info[1], info[2]);
+			break;
+		case check_num:
+			sys_check(cfd);
 			break;
 
 		default:

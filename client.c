@@ -34,8 +34,8 @@ enum
 	true
 };
 
-int sfd1;
-int sfd2;
+int primary_sfd;
+int secondary_sfd;
 int logfd;
 
 char ip[20] = "127.0.0.1";
@@ -60,60 +60,21 @@ int get_connection(char *ipstr, int port)
 
 void *timer_function(void *x_void_ptr)
 {
-	int error = 0;
-	socklen_t len = sizeof(error);
-	int retval = getsockopt(sfd1, SOL_SOCKET, SO_ERROR, &error, &len);
-
-	if (retval)
-	{
-		sfd1 = get_connection(ip, first_port);
-	}
-
-	error = 0;
-	retval = getsockopt(sfd2, SOL_SOCKET, SO_ERROR, &error, &len);
-
-	if (r2 < 0)
-	{
-		sfd2 = get_connection(ip, second_port);
-	}
-
-	// while (1)
-	// {
-	// 	int error = 0;
-	// 	socklen_t len = sizeof(error);
-	// 	int retval = getsockopt(sfd1, SOL_SOCKET, SO_ERROR, &error, &len);
-
-	// 	if (retval)
-	// 	{
-	// 		sfd1 = get_connection(ip, first_port);
-	// 	}
-
-	// 	error = 0;
-	// 	retval = getsockopt(sfd2, SOL_SOCKET, SO_ERROR, &error, &len);
-
-	// 	if (retval)
-	// 	{
-	// 		sfd2 = 555;//get_connection(ip, second_port);
-	// 	}
-
-	// 	sleep(1);
-	// }
+	int info[INFO_SIZE] = {check_num, 0, 0, 0, 0, 0}, rv;
+	send(primary_sfd, info, sizeof(int) * INFO_SIZE, MSG_NOSIGNAL);
+	read(primary_sfd, &rv, sizeof(rv));
 
 	return NULL;
 }
 
 int send_info_path(int sfd, int *info, const char *path)
 {
-	send(sfd, info, sizeof(int) * 5, MSG_NOSIGNAL);
+	send(sfd, info, sizeof(int) * INFO_SIZE, MSG_NOSIGNAL);
 	return send(sfd, path, info[1], MSG_NOSIGNAL);
 }
 
-int get_rv(int sfd, bool return_zero, int status)
+int get_rv(int sfd, bool return_zero)
 {
-	if (status == -1)
-	{
-		return 0;
-	}
 	int rv[2];
 	read(sfd, rv, sizeof(rv));
 
@@ -131,26 +92,26 @@ int get_rv(int sfd, bool return_zero, int status)
 void move_file(int sfd_from, int sfd_to, const char *path)
 {
 	struct stat stbuf;
-	int info[6] = {getattr_num, strlen(path) + 1, 0, 0, 0, 0};
+	int info[INFO_SIZE] = {getattr_num, strlen(path) + 1, 0, 0, 0, 0};
 	send_info_path(sfd_from, info, path);
 	read(sfd_from, &stbuf, sizeof(struct stat));
-	get_rv(sfd_from, true, 0);
+	get_rv(sfd_from, true);
 	int size = stbuf.st_size, tored, dread, pos = 0;
 	char *buffer = malloc(RWCHUNK);
 
-	int info1[6] = {unlink_num, strlen(path) + 1, 0, 0, 0, 0};
+	int info1[INFO_SIZE] = {unlink_num, strlen(path) + 1, 0, 0, 0, 0};
 	send_info_path(sfd_to, info1, path);
-	get_rv(sfd_to, true, 0);
+	get_rv(sfd_to, true);
 
-	int info2[6] = {mknod_num, strlen(path) + 1, stbuf.st_mode, stbuf.st_rdev, 0, 0};
+	int info2[INFO_SIZE] = {mknod_num, strlen(path) + 1, stbuf.st_mode, stbuf.st_rdev, 0, 0};
 	send_info_path(sfd_to, info2, path);
-	get_rv(sfd_to, true, 0);
+	get_rv(sfd_to, true);
 
 	while (size > 0)
 	{
 		tored = min(size, HASH_CHUNK);
 		// read
-		int info3[6] = {read_num, strlen(path) + 1, tored, pos, 0, 0};
+		int info3[INFO_SIZE] = {read_num, strlen(path) + 1, tored, pos, 0, 0};
 		send_info_path(sfd_from, info3, path);
 		int rv[2];
 		read(sfd_from, rv, sizeof(rv));
@@ -166,10 +127,10 @@ void move_file(int sfd_from, int sfd_to, const char *path)
 
 		dread = rv[1];
 
-		int info4[6] = {write_num, strlen(path) + 1, dread, pos, 0, 0};
+		int info4[INFO_SIZE] = {write_num, strlen(path) + 1, dread, pos, 0, 0};
 		send_info_path(sfd_to, info4, path);
 		send(sfd_to, buffer, size, MSG_NOSIGNAL);
-		get_rv(sfd_to, false, 0);
+		get_rv(sfd_to, false);
 
 		size -= dread;
 		pos += dread;
@@ -180,27 +141,27 @@ static int do_open(const char *path, struct fuse_file_info *fi)
 {
 	signal(SIGPIPE, SIG_IGN);
 
-	int info[6] = {open_num, strlen(path) + 1, fi->flags, 0, 0, 0};
-	r1 = send_info_path(sfd1, info, path);
-	r2 = send_info_path(sfd2, info, path);
+	int info[INFO_SIZE] = {open_num, strlen(path) + 1, fi->flags, 0, 0, 0};
+	send_info_path(primary_sfd, info, path);
+	send_info_path(secondary_sfd, info, path);
 
-	int rv1 = get_rv(sfd1, false, r1), rv2 = get_rv(sfd2, false, r2), i;
+	int rv1 = get_rv(primary_sfd, false), rv2 = get_rv(secondary_sfd, false), i;
 
 	unsigned char hash1[SHA_DIGEST_LENGTH];
 	unsigned char hash2[SHA_DIGEST_LENGTH];
 
-	if(r1 >= 0){read(sfd1, hash1, SHA_DIGEST_LENGTH);}
-	if(r2 >= 0){read(sfd2, hash2, SHA_DIGEST_LENGTH);}
+	read(primary_sfd, hash1, SHA_DIGEST_LENGTH);
+	read(secondary_sfd, hash2, SHA_DIGEST_LENGTH);
 
 	if (rv1 == HASH_ERROR)
 	{
-		move_file(sfd2, sfd1, path);
+		move_file(secondary_sfd, primary_sfd, path);
 	}
 	else
 	{
 		if (rv2 == HASH_ERROR)
 		{
-			move_file(sfd1, sfd2, path);
+			move_file(primary_sfd, secondary_sfd, path);
 		}
 		else
 		{
@@ -211,21 +172,21 @@ static int do_open(const char *path, struct fuse_file_info *fi)
 				{
 					struct stat st1;
 					struct stat st2;
-					int info2[6] = {getattr_num, strlen(path) + 1, 0, 0, 0, 0};
-					r1 = send_info_path(sfd1, info2, path);
-					r2 = send_info_path(sfd2, info2, path);
-					read(sfd1, &st1, sizeof(struct stat));
-					read(sfd2, &st2, sizeof(struct stat));
-					get_rv(sfd1, true, r1);
-					get_rv(sfd2, true, r2);
+					int info2[INFO_SIZE] = {getattr_num, strlen(path) + 1, 0, 0, 0, 0};
+					send_info_path(primary_sfd, info2, path);
+					send_info_path(secondary_sfd, info2, path);
+					read(primary_sfd, &st1, sizeof(struct stat));
+					read(secondary_sfd, &st2, sizeof(struct stat));
+					get_rv(primary_sfd, true);
+					get_rv(secondary_sfd, true);
 
 					if (st1.st_mtime > st2.st_mtime)
 					{
-						move_file(sfd1, sfd2, path);
+						move_file(primary_sfd, secondary_sfd, path);
 					}
 					else
 					{
-						move_file(sfd2, sfd1, path);
+						move_file(secondary_sfd, primary_sfd, path);
 					}
 
 					break;
@@ -241,11 +202,11 @@ static int do_read(const char *path, char *buf, size_t size, off_t offset,
 				   struct fuse_file_info *fi)
 {
 
-	int info[6] = {read_num, strlen(path) + 1, size, offset, 0, 0};
-	r1 = send_info_path(sfd1, info, path);
+	int info[INFO_SIZE] = {read_num, strlen(path) + 1, size, offset, 0, 0};
+	send_info_path(primary_sfd, info, path);
 
 	int rv[2];
-	read(sfd1, rv, sizeof(rv));
+	read(primary_sfd, rv, sizeof(rv));
 
 	if (rv[1] == -1)
 	{
@@ -254,7 +215,7 @@ static int do_read(const char *path, char *buf, size_t size, off_t offset,
 	}
 
 	if (rv[1] > 0)
-		read(sfd1, buf, rv[1]);
+		read(primary_sfd, buf, rv[1]);
 
 	return rv[1];
 }
@@ -262,75 +223,74 @@ static int do_read(const char *path, char *buf, size_t size, off_t offset,
 static int do_write(const char *path, const char *buf, size_t size,
 					off_t offset, struct fuse_file_info *fi)
 {
-	int info[6] = {write_num, strlen(path) + 1, size, offset, 0, 0};
-	// write(sfd1, info, sizeof(int) * 5);
-	send_info_path(sfd1, info, path);
-	send_info_path(sfd2, info, path);
-	r1 = send(sfd1, buf, size, MSG_NOSIGNAL);
-	r2 = send(sfd2, buf, size, MSG_NOSIGNAL);
+	int info[INFO_SIZE] = {write_num, strlen(path) + 1, size, offset, 0, 0};
+	send_info_path(primary_sfd, info, path);
+	send_info_path(secondary_sfd, info, path);
+	send(primary_sfd, buf, size, MSG_NOSIGNAL);
+	send(secondary_sfd, buf, size, MSG_NOSIGNAL);
 
-	get_rv(sfd2, false, r1);
-	return get_rv(sfd1, false, r2);
+	get_rv(secondary_sfd, false);
+	return get_rv(primary_sfd, false);
 }
 
 static int do_release(const char *path, struct fuse_file_info *fi)
 {
-	int info[6] = {release_num, strlen(path) + 1, 0, 0, 0, 0};
-	send_info_path(sfd1, info, path);
+	int info[INFO_SIZE] = {release_num, strlen(path) + 1, 0, 0, 0, 0};
+	send_info_path(primary_sfd, info, path);
 
-	return get_rv(sfd1, true);
+	return get_rv(primary_sfd, true);
 }
 
 static int do_rename(const char *from, const char *to)
 {
-	int info[6] = {rename_num, strlen(from) + 1, strlen(to) + 1, 0, 0, 0};
-	send_info_path(sfd1, info, from);
-	send_info_path(sfd2, info, from);
-	send(sfd1, to, strlen(to) + 1, MSG_NOSIGNAL);
-	s2_status = send(sfd2, to, strlen(to) + 1, MSG_NOSIGNAL);
+	int info[INFO_SIZE] = {rename_num, strlen(from) + 1, strlen(to) + 1, 0, 0, 0};
+	send_info_path(primary_sfd, info, from);
+	send_info_path(secondary_sfd, info, from);
+	send(primary_sfd, to, strlen(to) + 1, MSG_NOSIGNAL);
+	send(secondary_sfd, to, strlen(to) + 1, MSG_NOSIGNAL);
 
-	get_rv(sfd2, true);
-	return get_rv(sfd1, true);
+	get_rv(secondary_sfd, true);
+	return get_rv(primary_sfd, true);
 }
 
 static int do_unlink(const char *path)
 {
-	int info[6] = {unlink_num, strlen(path) + 1, 0, 0, 0, 0};
-	send_info_path(sfd1, info, path);
-	send_info_path(sfd2, info, path);
+	int info[INFO_SIZE] = {unlink_num, strlen(path) + 1, 0, 0, 0, 0};
+	send_info_path(primary_sfd, info, path);
+	send_info_path(secondary_sfd, info, path);
 
-	get_rv(sfd2, true);
-	return get_rv(sfd1, true);
+	get_rv(secondary_sfd, true);
+	return get_rv(primary_sfd, true);
 }
 
 static int do_rmdir(const char *path)
 {
-	int info[6] = {rmdir_num, strlen(path) + 1, 0, 0, 0, 0};
-	send_info_path(sfd1, info, path);
-	send_info_path(sfd2, info, path);
+	int info[INFO_SIZE] = {rmdir_num, strlen(path) + 1, 0, 0, 0, 0};
+	send_info_path(primary_sfd, info, path);
+	send_info_path(secondary_sfd, info, path);
 
-	get_rv(sfd2, true);
-	return get_rv(sfd1, true);
+	get_rv(secondary_sfd, true);
+	return get_rv(primary_sfd, true);
 }
 
 static int do_mkdir(const char *path, mode_t mode)
 {
-	int info[6] = {mkdir_num, strlen(path) + 1, mode, 0, 0, 0};
-	send_info_path(sfd1, info, path);
-	send_info_path(sfd2, info, path);
+	int info[INFO_SIZE] = {mkdir_num, strlen(path) + 1, mode, 0, 0, 0};
+	send_info_path(primary_sfd, info, path);
+	send_info_path(secondary_sfd, info, path);
 
-	get_rv(sfd2, true);
-	return get_rv(sfd1, true);
+	get_rv(secondary_sfd, true);
+	return get_rv(primary_sfd, true);
 }
 
 static int do_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 					  off_t offset, struct fuse_file_info *fi)
 {
-	int info[6] = {readdir_num, strlen(path) + 1, 0, 0, 0, 0};
-	send_info_path(sfd1, info, path);
+	int info[INFO_SIZE] = {readdir_num, strlen(path) + 1, 0, 0, 0, 0};
+	send_info_path(primary_sfd, info, path);
 
 	int rv[3];
-	read(sfd1, rv, sizeof(rv));
+	read(primary_sfd, rv, sizeof(rv));
 
 	while (rv[0] != 0)
 	{
@@ -344,9 +304,9 @@ static int do_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 		st.st_ino = rv[0];
 		st.st_mode = rv[1];
 		char name[rv[2]];
-		read(sfd1, name, rv[2]);
+		read(primary_sfd, name, rv[2]);
 		filler(buf, name, &st, 0);
-		read(sfd1, rv, sizeof(rv));
+		read(primary_sfd, rv, sizeof(rv));
 	}
 
 	return 0;
@@ -354,43 +314,44 @@ static int do_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 
 static int do_getattr(const char *path, struct stat *stbuf)
 {
-	timer_function(NULL);
-	int info[6] = {getattr_num, strlen(path) + 1, 0, 0, 0, 0};
-	send_info_path(sfd1, info, path);
+	int info[INFO_SIZE] = {getattr_num, strlen(path) + 1, 0, 0, 0, 0};
+	send_info_path(primary_sfd, info, path);
 
-	read(sfd1, stbuf, sizeof(struct stat));
+	read(primary_sfd, stbuf, sizeof(struct stat));
 
-	return get_rv(sfd1, true);
+	int rv =  get_rv(primary_sfd, true);
+	// timer_function(NULL);
+	return rv;
 }
 
 static int do_mknod(const char *path, mode_t mode, dev_t rdev)
 {
-	int info[6] = {mknod_num, strlen(path) + 1, mode, rdev, 0, 0};
-	send_info_path(sfd1, info, path);
-	send_info_path(sfd2, info, path);
+	int info[INFO_SIZE] = {mknod_num, strlen(path) + 1, mode, rdev, 0, 0};
+	send_info_path(primary_sfd, info, path);
+	send_info_path(secondary_sfd, info, path);
 
-	get_rv(sfd2, true);
-	return get_rv(sfd1, true);
+	get_rv(secondary_sfd, true);
+	return get_rv(primary_sfd, true);
 }
 
 static int do_utimens(const char *path, const struct timespec ts[2])
 {
-	int info[6] = {utimens_num, strlen(path) + 1, ts[0].tv_sec, ts[0].tv_nsec / 1000, ts[1].tv_sec, ts[1].tv_nsec / 1000};
-	send_info_path(sfd1, info, path);
-	send_info_path(sfd2, info, path);
+	int info[INFO_SIZE] = {utimens_num, strlen(path) + 1, ts[0].tv_sec, ts[0].tv_nsec / 1000, ts[1].tv_sec, ts[1].tv_nsec / 1000};
+	send_info_path(primary_sfd, info, path);
+	send_info_path(secondary_sfd, info, path);
 
-	get_rv(sfd2, true);
-	return get_rv(sfd1, true);
+	get_rv(secondary_sfd, true);
+	return get_rv(primary_sfd, true);
 }
 
 static int do_truncate(const char *path, off_t size)
 {
-	int info[6] = {truncate_num, strlen(path) + 1, size, 0, 0, 0};
-	send_info_path(sfd1, info, path);
-	send_info_path(sfd2, info, path);
+	int info[INFO_SIZE] = {truncate_num, strlen(path) + 1, size, 0, 0, 0};
+	send_info_path(primary_sfd, info, path);
+	send_info_path(secondary_sfd, info, path);
 
-	get_rv(sfd2, true);
-	return get_rv(sfd1, true);
+	get_rv(secondary_sfd, true);
+	return get_rv(primary_sfd, true);
 }
 
 static struct fuse_operations do_oper = {
@@ -414,8 +375,8 @@ int main(int argc, char *argv[])
 	// umask(0);
 	first_port = 5000;
 	second_port = 5001;
-	sfd1 = get_connection(ip, first_port);
-	sfd2 = get_connection(ip, second_port);
+	primary_sfd = get_connection(ip, first_port);
+	secondary_sfd = get_connection(ip, second_port);
 	pthread_t timer_thread;
 	// pthread_create(&timer_thread, NULL, timer_function, NULL);
 	return fuse_main(argc, argv, &do_oper, NULL);
