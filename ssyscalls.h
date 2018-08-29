@@ -10,12 +10,13 @@ typedef enum syscall_num
 	rmdir_num,
 	mkdir_num,
 	readdir_num,
-	releasedir_num,
 	mknod_num,
 	getattr_num,
 	utimens_num,
 	truncate_num,
-	check_num
+	check_num,
+	send_tar_gz_num,
+	recive_tar_gz_num
 } syscall_num;
 
 #define HASH_ERROR -7
@@ -24,3 +25,4 @@ typedef enum syscall_num
 #define max(a, b) (a > b ? a : b)
 #define HASH_CHUNK 32768
 #define INFO_SIZE 6
+#define MAX_PATH_LEN 1024

@@ -14,7 +14,7 @@ u:
 	fusermount -u /home/vagrant/code/final/sa
 
 m:
-	./hello /home/vagrant/code/final/sa -o sync_read
+	./hello /home/vagrant/code/final/sa -o sync_read -f
 
 mf:
 	./hello -f /home/vagrant/code/final/sa
