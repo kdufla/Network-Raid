@@ -23,7 +23,9 @@
 #include <openssl/sha.h>
 #include <pthread.h>
 
+#include "parse.h"
 #include "ssyscalls.h"
+#include "logger.h"
 
 #define PATH "/home/vagrant/code/final/ss"
 #define min(a, b) (a < b ? a : b)
@@ -35,17 +37,17 @@ enum
 };
 
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
-int primary_sfd;
-int secondary_sfd;
-int hotswap_sfd;
-int logfd;
+int primary_sfd, secondary_sfd, hotswap_sfd;
+int primary_port, secondary_port, hotswap_port;
+char *primary_ip, *secondary_ip, *hotswap_ip;
 
-char ip[20] = "127.0.0.1";
-int first_port, second_port, hot_port;
+char *stor_name;
+int logfd, timeout;
+
+// char ip[20] = "127.0.0.1";
 
 int get_connection(char *ipstr, int port)
 {
-	signal(SIGPIPE, SIG_IGN);
 	struct sockaddr_in addr;
 	int ip;
 	int sfd = socket(AF_INET, SOCK_STREAM, 0);
@@ -137,6 +139,11 @@ static int do_open(const char *path, struct fuse_file_info *fi)
 	send_info_path(primary_sfd, info, path);
 	send_info_path(secondary_sfd, info, path);
 
+	char message[512];
+	snprintf(message, 512, "Open %s", path);
+	log_msg(stor_name, primary_ip, primary_port, message);
+	log_msg(stor_name, secondary_ip, secondary_port, message);
+
 	int rv1 = get_rv(primary_sfd, false);
 	int rv2 = get_rv(secondary_sfd, false);
 
@@ -148,7 +155,9 @@ static int do_open(const char *path, struct fuse_file_info *fi)
 	{
 		read(secondary_sfd, hash2, SHA_DIGEST_LENGTH);
 		move_file(secondary_sfd, primary_sfd, path);
-	    pthread_mutex_unlock(&mutex);
+		snprintf(message, 512, "No %s found. Write it from somewhere else", path);
+		log_msg(stor_name, primary_ip, primary_port, message);
+		pthread_mutex_unlock(&mutex);
 		return 0;
 	}
 
@@ -156,7 +165,9 @@ static int do_open(const char *path, struct fuse_file_info *fi)
 	{
 		read(primary_sfd, hash1, SHA_DIGEST_LENGTH);
 		move_file(primary_sfd, secondary_sfd, path);
-	    pthread_mutex_unlock(&mutex);
+		snprintf(message, 512, "No %s found. Write it from somewhere else", path);
+		log_msg(stor_name, secondary_ip, secondary_port, message);
+		pthread_mutex_unlock(&mutex);
 		return 0;
 	}
 
@@ -167,18 +178,26 @@ static int do_open(const char *path, struct fuse_file_info *fi)
 
 	if (pup * sup <= 0)
 	{
-	    pthread_mutex_unlock(&mutex);
+		if (pup <= 0)
+			log_msg(stor_name, primary_ip, primary_port, "Server is down");
+
+		if (pup <= 0)
+			log_msg(stor_name, secondary_ip, secondary_port, "Server is down");
+
+		pthread_mutex_unlock(&mutex);
 		return 0;
 	}
 
 	if (rv1 == HASH_ERROR)
 	{
+		log_msg(stor_name, primary_ip, primary_port, "Incorrect hash");
 		move_file(secondary_sfd, primary_sfd, path);
 	}
 	else
 	{
 		if (rv2 == HASH_ERROR)
 		{
+			log_msg(stor_name, secondary_ip, secondary_port, "Incorrect hash");
 			move_file(primary_sfd, secondary_sfd, path);
 		}
 		else
@@ -224,12 +243,18 @@ static int do_read(const char *path, char *buf, size_t size, off_t offset,
 	int info[INFO_SIZE] = {read_num, strlen(path) + 1, size, offset, 0, 0};
 	send_info_path(primary_sfd, info, path);
 
+	char message[512];
+	snprintf(message, 512, "Read %s", path);
+	log_msg(stor_name, primary_ip, primary_port, message);
+	
 	int rv[2];
 	read(primary_sfd, rv, sizeof(rv));
 
 	if (rv[1] == -1)
 	{
 		errno = rv[0];
+		snprintf(message, 512, "Read %s erroe. errno:%d", path, errno);
+		log_msg(stor_name, primary_ip, primary_port, message);
 		pthread_mutex_unlock(&mutex);
 		return -errno;
 	}
@@ -251,6 +276,11 @@ static int do_write(const char *path, const char *buf, size_t size,
 	send(primary_sfd, buf, size, MSG_NOSIGNAL);
 	send(secondary_sfd, buf, size, MSG_NOSIGNAL);
 
+	char message[512];
+	snprintf(message, 512, "Write %s", path);
+	log_msg(stor_name, primary_ip, primary_port, message);
+	log_msg(stor_name, secondary_ip, secondary_port, message);
+
 	get_rv(secondary_sfd, false);
 	int ret = get_rv(primary_sfd, false);
 	pthread_mutex_unlock(&mutex);
@@ -262,6 +292,10 @@ static int do_release(const char *path, struct fuse_file_info *fi)
 	pthread_mutex_lock(&mutex);
 	int info[INFO_SIZE] = {release_num, strlen(path) + 1, 0, 0, 0, 0};
 	send_info_path(primary_sfd, info, path);
+
+	char message[512];
+	snprintf(message, 512, "Release %s", path);
+	log_msg(stor_name, primary_ip, primary_port, message);
 
 	int ret = get_rv(primary_sfd, true);
 	pthread_mutex_unlock(&mutex);
@@ -277,6 +311,11 @@ static int do_rename(const char *from, const char *to)
 	send(primary_sfd, to, strlen(to) + 1, MSG_NOSIGNAL);
 	send(secondary_sfd, to, strlen(to) + 1, MSG_NOSIGNAL);
 
+	char message[512];
+	snprintf(message, 512, "Rename %s to %s", from, to);
+	log_msg(stor_name, primary_ip, primary_port, message);
+	log_msg(stor_name, secondary_ip, secondary_port, message);
+
 	get_rv(secondary_sfd, true);
 	int ret = get_rv(primary_sfd, true);
 	pthread_mutex_unlock(&mutex);
@@ -289,6 +328,10 @@ static int do_unlink(const char *path)
 	int info[INFO_SIZE] = {unlink_num, strlen(path) + 1, 0, 0, 0, 0};
 	send_info_path(primary_sfd, info, path);
 	send_info_path(secondary_sfd, info, path);
+
+	char message[512];
+	snprintf(message, 512, "Unlink %s", path);
+	log_msg(stor_name, primary_ip, primary_port, message);
 
 	get_rv(secondary_sfd, true);
 	int ret = get_rv(primary_sfd, true);
@@ -303,6 +346,11 @@ static int do_rmdir(const char *path)
 	send_info_path(primary_sfd, info, path);
 	send_info_path(secondary_sfd, info, path);
 
+	char message[512];
+	snprintf(message, 512, "Remove directory %s", path);
+	log_msg(stor_name, primary_ip, primary_port, message);
+	log_msg(stor_name, secondary_ip, secondary_port, message);
+
 	get_rv(secondary_sfd, true);
 	int ret = get_rv(primary_sfd, true);
 	pthread_mutex_unlock(&mutex);
@@ -316,6 +364,11 @@ static int do_mkdir(const char *path, mode_t mode)
 	send_info_path(primary_sfd, info, path);
 	send_info_path(secondary_sfd, info, path);
 
+	char message[512];
+	snprintf(message, 512, "Make directory %s", path);
+	log_msg(stor_name, primary_ip, primary_port, message);
+	log_msg(stor_name, secondary_ip, secondary_port, message);
+
 	get_rv(secondary_sfd, true);
 	int ret = get_rv(primary_sfd, true);
 	pthread_mutex_unlock(&mutex);
@@ -328,6 +381,10 @@ static int do_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 	pthread_mutex_lock(&mutex);
 	int info[INFO_SIZE] = {readdir_num, strlen(path) + 1, 0, 0, 0, 0};
 	send_info_path(primary_sfd, info, path);
+
+	char message[512];
+	snprintf(message, 512, "Read dirrctory %s", path);
+	log_msg(stor_name, primary_ip, primary_port, message);
 
 	int rv[3];
 	read(primary_sfd, rv, sizeof(rv));
@@ -360,6 +417,10 @@ static int do_getattr(const char *path, struct stat *stbuf)
 	int info[INFO_SIZE] = {getattr_num, strlen(path) + 1, 0, 0, 0, 0};
 	send_info_path(primary_sfd, info, path);
 
+	// char message[512];
+	// snprintf(message, 512, "Get attribute %s", path);
+	// log_msg(stor_name, primary_ip, primary_port, message);
+
 	read(primary_sfd, stbuf, sizeof(struct stat));
 
 	int rv = get_rv(primary_sfd, true);
@@ -375,6 +436,11 @@ static int do_mknod(const char *path, mode_t mode, dev_t rdev)
 	send_info_path(primary_sfd, info, path);
 	send_info_path(secondary_sfd, info, path);
 
+	char message[512];
+	snprintf(message, 512, "mknod %s", path);
+	log_msg(stor_name, primary_ip, primary_port, message);
+	log_msg(stor_name, secondary_ip, secondary_port, message);
+
 	get_rv(secondary_sfd, true);
 	int ret = get_rv(primary_sfd, true);
 	pthread_mutex_unlock(&mutex);
@@ -388,6 +454,11 @@ static int do_utimens(const char *path, const struct timespec ts[2])
 	send_info_path(primary_sfd, info, path);
 	send_info_path(secondary_sfd, info, path);
 
+	char message[512];
+	snprintf(message, 512, "utimens %s", path);
+	log_msg(stor_name, primary_ip, primary_port, message);
+	log_msg(stor_name, secondary_ip, secondary_port, message);
+
 	get_rv(secondary_sfd, true);
 	int ret = get_rv(primary_sfd, true);
 	pthread_mutex_unlock(&mutex);
@@ -400,6 +471,11 @@ static int do_truncate(const char *path, off_t size)
 	int info[INFO_SIZE] = {truncate_num, strlen(path) + 1, size, 0, 0, 0};
 	send_info_path(primary_sfd, info, path);
 	send_info_path(secondary_sfd, info, path);
+
+	char message[512];
+	snprintf(message, 512, "Truncate %s", path);
+	log_msg(stor_name, primary_ip, primary_port, message);
+	log_msg(stor_name, secondary_ip, secondary_port, message);
 
 	get_rv(secondary_sfd, true);
 	int ret = get_rv(primary_sfd, true);
@@ -419,13 +495,19 @@ void *timer_function(void *x_void_ptr)
 
 		if (prv <= 0)
 		{
+			log_msg(stor_name, primary_ip, primary_port, "Can't connect to server");
+		
 			int tmp = secondary_sfd;
 			secondary_sfd = primary_sfd;
 			primary_sfd = tmp;
 
-			tmp = second_port;
-			second_port = first_port;
-			first_port = tmp;
+			tmp = secondary_port;
+			secondary_port = primary_port;
+			primary_port = tmp;
+
+			void *tmpp = secondary_ip;
+			secondary_ip = primary_ip;
+			primary_ip = tmpp;
 		}
 
 		send(secondary_sfd, info, sizeof(int) * INFO_SIZE, MSG_NOSIGNAL);
@@ -433,42 +515,52 @@ void *timer_function(void *x_void_ptr)
 
 		if (srv <= 0)
 		{
+			log_msg(stor_name, secondary_ip, secondary_port, "Can't connect to server");
 			cnt++;
-			secondary_sfd = get_connection(ip, second_port);
+			secondary_sfd = get_connection(secondary_ip, secondary_port);
 		}
 		else
 		{
 			cnt = 0;
 		}
 
-		if(cnt >= 10)
+		if (cnt >= timeout)
 		{
+			log_msg(stor_name, secondary_ip, secondary_port, "Server declared as lost");
+			log_msg(stor_name, hotswap_ip, hotswap_port, "Hot swap server added");
+
 			int tmp = secondary_sfd;
 			secondary_sfd = hotswap_sfd;
 			hotswap_sfd = tmp;
 
-			tmp = second_port;
-			second_port = hot_port;
-			hot_port = tmp;
+			tmp = secondary_port;
+			secondary_port = hotswap_port;
+			hotswap_port = tmp;
+
+			void *tmpp = secondary_ip;
+			secondary_ip = hotswap_ip;
+			hotswap_ip = tmpp;
 
 			info[0] = send_tar_gz_num;
 			send(primary_sfd, info, sizeof(int) * INFO_SIZE, MSG_NOSIGNAL);
 			char path[32] = "/im.in.that.745.tar.gz";
 			move_file(primary_sfd, secondary_sfd, path);
-			info[0]= recive_tar_gz_num;
+			info[0] = recive_tar_gz_num;
 			send(secondary_sfd, info, sizeof(int) * INFO_SIZE, MSG_NOSIGNAL);
-		    pthread_mutex_unlock(&mutex);
+			pthread_mutex_unlock(&mutex);
 			do_unlink(path);
 			pthread_mutex_lock(&mutex);
 			info[0] = check_num;
 		}
-	    pthread_mutex_unlock(&mutex);
+		pthread_mutex_unlock(&mutex);
 
 		sleep(1);
 	}
 
 	return NULL;
 }
+
+int mount(int argc, char *argv[]);
 
 static struct fuse_operations do_oper = {
 	.open = do_open,
@@ -486,16 +578,69 @@ static struct fuse_operations do_oper = {
 	.truncate = do_truncate,
 };
 
-int main(int argc, char *argv[])
+int mount_storage(storage *stor)
 {
-	// umask(0);
-	first_port = 5000;
-	second_port = 5001;
-	hot_port = 5003;
-	primary_sfd = get_connection(ip, first_port);
-	secondary_sfd = get_connection(ip, second_port);
-	hotswap_sfd = get_connection(ip, hot_port);
+	int argc = 5;
+	char *argv[argc];
+	argv[0] = strdup("net_raid_client");
+	argv[1] = strdup(stor->mountpoint);
+	argv[2] = strdup("-o");
+	argv[3] = strdup("sync_read");
+	argv[4] = strdup("-f");
+
+	primary_port = stor->servers[0].port;
+	secondary_port = stor->servers[1].port;
+	hotswap_port = stor->hotswap.port;
+
+	primary_ip = stor->servers[0].ip;
+	secondary_ip = stor->servers[1].ip;
+	hotswap_ip = stor->hotswap.ip;
+
+	primary_sfd = get_connection(primary_ip, primary_port);
+	if (primary_sfd > 0)
+	{
+		log_msg(stor_name, primary_ip, primary_port, "Connected");
+	}
+	secondary_sfd = get_connection(secondary_ip, secondary_port);
+	if (secondary_sfd > 0)
+	{
+		log_msg(stor_name, secondary_ip, secondary_port, "Connected");
+	}
+	hotswap_sfd = get_connection(hotswap_ip, hotswap_port);
+	if (hotswap_sfd > 0)
+	{
+		log_msg(stor_name, hotswap_ip, hotswap_port, "Connected");
+	}
+
 	pthread_t timer_thread;
 	pthread_create(&timer_thread, NULL, timer_function, NULL);
+
 	return fuse_main(argc, argv, &do_oper, NULL);
+}
+
+int main(int argc, char *argv[])
+{
+	parse(argv[1]);
+	init_logger(get_errorlog());
+	storage *stor;
+	log_msg("none", "0.0.0.0", 0, "logger init");
+
+	timeout = get_timeout();
+	// umask(0);
+
+	int i;
+	for (i = 0; i < get_storage_cnt(); i++)
+	{
+		switch (fork())
+		{
+		case -1:
+			exit(100);
+		case 0:
+			stor = get_storage(i);
+			stor_name = strdup(stor->name);
+			mount_storage(stor);
+		}
+	}
+
+	return 0;
 }

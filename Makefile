@@ -2,19 +2,22 @@ all: client server
 
 
 client: client.c
-	gcc -Wall -g client.c `pkg-config fuse --cflags --libs` -o hello -lpthread -lssl -lcrypto
+	gcc -Wall -g client.c parse.c logger.c `pkg-config fuse --cflags --libs` -o client -lpthread -lssl -lcrypto
 
 server: server.c
 	gcc server.c -g -o server -lpthread -lssl -lcrypto
 
 clean:
-	rm hello server
+	rm client server
 
 u:
-	fusermount -u /home/vagrant/code/final/sa
+	fusermount -u /home/ggvel/Documents/Network-Raid/sa
+
+md:
+	gdb --args ./client /home/ggvel/Documents/Network-Raid/sa -o sync_read -f
 
 m:
-	./hello /home/vagrant/code/final/sa -o sync_read -f
+	./client /home/ggvel/Documents/Network-Raid/CONFIG
 
 mf:
 	./hello -f /home/vagrant/code/final/sa

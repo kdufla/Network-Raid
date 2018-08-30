@@ -13,6 +13,9 @@
 #include <sys/time.h>
 #include <dirent.h>
 #include <openssl/sha.h>
+#include <sys/xattr.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 #include "ssyscalls.h"
 
@@ -310,7 +313,7 @@ void sys_mknod(int cfd, int len, mode_t mode, dev_t rdev)
 	char buff[MAX_PATH_LEN];
 	strcpy(buff, mpath);
 	read(cfd, buff + strlen(mpath), len);
-	printf("mknod %s mode:%d rdev:%d\n", buff, mode, rdev);
+	printf("mknod %s mode:%d rdev:%ld\n", buff, mode, rdev);
 
 	int rv[2] = {0, 0};
 
@@ -350,7 +353,7 @@ void sys_utimens(int cfd, int len, long t0s, long t0ns, long t1s, long t1ns)
 	char buff[MAX_PATH_LEN];
 	strcpy(buff, mpath);
 	read(cfd, buff + strlen(mpath), len);
-	printf("utimens %s t0s:%d t0ns:%d t1s:%d t1ns:%d\n", buff, t0s, t0ns, t1s, t1ns);
+	printf("utimens %s t0s:%ld t0ns:%ld t1s:%ld t1ns:%ld\n", buff, t0s, t0ns, t1s, t1ns);
 
 	int rv[2] = {0, 0};
 	struct timeval tv[2];
@@ -510,16 +513,18 @@ int main(int argc, char *argv[])
 	int sfd, cfd;
 	struct sockaddr_in addr;
 	struct sockaddr_in peer_addr;
-	strcpy(mpath, argv[1]);
+	strcpy(mpath, argv[3]);
 	sscanf(argv[2], "%i", &port);
 	printf("%s\n", mpath);
+	char *ip=argv[1];
 
 	sfd = socket(AF_INET, SOCK_STREAM, 0);
 	int optval = 1;
 	setsockopt(sfd, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(int));
 	addr.sin_family = AF_INET;
 	addr.sin_port = htons(port);
-	addr.sin_addr.s_addr = htonl(INADDR_ANY);
+	inet_aton(ip, &(addr.sin_addr));
+	// addr.sin_addr.s_addr = htonl(INADDR_ANY);
 	bind(sfd, (struct sockaddr *)&addr, sizeof(struct sockaddr_in));
 	listen(sfd, BACKLOG);
 

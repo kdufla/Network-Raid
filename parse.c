@@ -22,10 +22,9 @@ storage storages[10];
 
 int storage_cnt;
 
-void parse()
+void parse(char *file_name)
 {
-	char const *const fileName = "CONFIG"; /* should check that argc > 1 */
-	FILE *file = fopen(fileName, "r");	 /* should check the result */
+	FILE *file = fopen(file_name, "r");	 /* should check the result */
 	char line[256];
 
 	// error log
@@ -80,7 +79,6 @@ void parse()
 	*end_ptr = '\0';
 	timeout = str_int(start_ptr);
 
-	storages[10];
 	storage_cnt = 0;
 
 	while (fgets(line, sizeof(line), file))
