@@ -34,12 +34,14 @@ enum
 	true
 };
 
+pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 int primary_sfd;
 int secondary_sfd;
+int hotswap_sfd;
 int logfd;
 
 char ip[20] = "127.0.0.1";
-int first_port, second_port, r1 = 0, r2 = 0;
+int first_port, second_port, hot_port;
 
 int get_connection(char *ipstr, int port)
 {
@@ -56,15 +58,6 @@ int get_connection(char *ipstr, int port)
 	connect(sfd, (struct sockaddr *)&addr, sizeof(struct sockaddr_in));
 
 	return sfd;
-}
-
-void *timer_function(void *x_void_ptr)
-{
-	int info[INFO_SIZE] = {check_num, 0, 0, 0, 0, 0}, rv;
-	send(primary_sfd, info, sizeof(int) * INFO_SIZE, MSG_NOSIGNAL);
-	read(primary_sfd, &rv, sizeof(rv));
-
-	return NULL;
 }
 
 int send_info_path(int sfd, int *info, const char *path)
@@ -109,7 +102,7 @@ void move_file(int sfd_from, int sfd_to, const char *path)
 
 	while (size > 0)
 	{
-		tored = min(size, HASH_CHUNK);
+		tored = min(size, RWCHUNK);
 		// read
 		int info3[INFO_SIZE] = {read_num, strlen(path) + 1, tored, pos, 0, 0};
 		send_info_path(sfd_from, info3, path);
@@ -139,19 +132,44 @@ void move_file(int sfd_from, int sfd_to, const char *path)
 
 static int do_open(const char *path, struct fuse_file_info *fi)
 {
-	signal(SIGPIPE, SIG_IGN);
-
-	int info[INFO_SIZE] = {open_num, strlen(path) + 1, fi->flags, 0, 0, 0};
+	pthread_mutex_lock(&mutex);
+	int info[INFO_SIZE] = {open_num, strlen(path) + 1, fi->flags, 0, 0, 0}, i;
 	send_info_path(primary_sfd, info, path);
 	send_info_path(secondary_sfd, info, path);
 
-	int rv1 = get_rv(primary_sfd, false), rv2 = get_rv(secondary_sfd, false), i;
+	int rv1 = get_rv(primary_sfd, false);
+	int rv2 = get_rv(secondary_sfd, false);
 
 	unsigned char hash1[SHA_DIGEST_LENGTH];
 	unsigned char hash2[SHA_DIGEST_LENGTH];
 
-	read(primary_sfd, hash1, SHA_DIGEST_LENGTH);
-	read(secondary_sfd, hash2, SHA_DIGEST_LENGTH);
+	// if one ot the server does not contain file, just copy it from the other one
+	if (rv1 == -ENOENT)
+	{
+		read(secondary_sfd, hash2, SHA_DIGEST_LENGTH);
+		move_file(secondary_sfd, primary_sfd, path);
+	    pthread_mutex_unlock(&mutex);
+		return 0;
+	}
+
+	if (rv2 == -ENOENT)
+	{
+		read(primary_sfd, hash1, SHA_DIGEST_LENGTH);
+		move_file(primary_sfd, secondary_sfd, path);
+	    pthread_mutex_unlock(&mutex);
+		return 0;
+	}
+
+	int pup, sup; // primary up and secondary up. 0 means that server is down.
+
+	pup = read(primary_sfd, hash1, SHA_DIGEST_LENGTH);
+	sup = read(secondary_sfd, hash2, SHA_DIGEST_LENGTH);
+
+	if (pup * sup <= 0)
+	{
+	    pthread_mutex_unlock(&mutex);
+		return 0;
+	}
 
 	if (rv1 == HASH_ERROR)
 	{
@@ -195,13 +213,14 @@ static int do_open(const char *path, struct fuse_file_info *fi)
 		}
 	}
 
+	pthread_mutex_unlock(&mutex);
 	return 0;
 }
 
 static int do_read(const char *path, char *buf, size_t size, off_t offset,
 				   struct fuse_file_info *fi)
 {
-
+	pthread_mutex_lock(&mutex);
 	int info[INFO_SIZE] = {read_num, strlen(path) + 1, size, offset, 0, 0};
 	send_info_path(primary_sfd, info, path);
 
@@ -211,18 +230,21 @@ static int do_read(const char *path, char *buf, size_t size, off_t offset,
 	if (rv[1] == -1)
 	{
 		errno = rv[0];
+		pthread_mutex_unlock(&mutex);
 		return -errno;
 	}
 
 	if (rv[1] > 0)
 		read(primary_sfd, buf, rv[1]);
 
+	pthread_mutex_unlock(&mutex);
 	return rv[1];
 }
 
 static int do_write(const char *path, const char *buf, size_t size,
 					off_t offset, struct fuse_file_info *fi)
 {
+	pthread_mutex_lock(&mutex);
 	int info[INFO_SIZE] = {write_num, strlen(path) + 1, size, offset, 0, 0};
 	send_info_path(primary_sfd, info, path);
 	send_info_path(secondary_sfd, info, path);
@@ -230,19 +252,25 @@ static int do_write(const char *path, const char *buf, size_t size,
 	send(secondary_sfd, buf, size, MSG_NOSIGNAL);
 
 	get_rv(secondary_sfd, false);
-	return get_rv(primary_sfd, false);
+	int ret = get_rv(primary_sfd, false);
+	pthread_mutex_unlock(&mutex);
+	return ret;
 }
 
 static int do_release(const char *path, struct fuse_file_info *fi)
 {
+	pthread_mutex_lock(&mutex);
 	int info[INFO_SIZE] = {release_num, strlen(path) + 1, 0, 0, 0, 0};
 	send_info_path(primary_sfd, info, path);
 
-	return get_rv(primary_sfd, true);
+	int ret = get_rv(primary_sfd, true);
+	pthread_mutex_unlock(&mutex);
+	return ret;
 }
 
 static int do_rename(const char *from, const char *to)
 {
+	pthread_mutex_lock(&mutex);
 	int info[INFO_SIZE] = {rename_num, strlen(from) + 1, strlen(to) + 1, 0, 0, 0};
 	send_info_path(primary_sfd, info, from);
 	send_info_path(secondary_sfd, info, from);
@@ -250,42 +278,54 @@ static int do_rename(const char *from, const char *to)
 	send(secondary_sfd, to, strlen(to) + 1, MSG_NOSIGNAL);
 
 	get_rv(secondary_sfd, true);
-	return get_rv(primary_sfd, true);
+	int ret = get_rv(primary_sfd, true);
+	pthread_mutex_unlock(&mutex);
+	return ret;
 }
 
 static int do_unlink(const char *path)
 {
+	pthread_mutex_lock(&mutex);
 	int info[INFO_SIZE] = {unlink_num, strlen(path) + 1, 0, 0, 0, 0};
 	send_info_path(primary_sfd, info, path);
 	send_info_path(secondary_sfd, info, path);
 
 	get_rv(secondary_sfd, true);
-	return get_rv(primary_sfd, true);
+	int ret = get_rv(primary_sfd, true);
+	pthread_mutex_unlock(&mutex);
+	return ret;
 }
 
 static int do_rmdir(const char *path)
 {
+	pthread_mutex_lock(&mutex);
 	int info[INFO_SIZE] = {rmdir_num, strlen(path) + 1, 0, 0, 0, 0};
 	send_info_path(primary_sfd, info, path);
 	send_info_path(secondary_sfd, info, path);
 
 	get_rv(secondary_sfd, true);
-	return get_rv(primary_sfd, true);
+	int ret = get_rv(primary_sfd, true);
+	pthread_mutex_unlock(&mutex);
+	return ret;
 }
 
 static int do_mkdir(const char *path, mode_t mode)
 {
+	pthread_mutex_lock(&mutex);
 	int info[INFO_SIZE] = {mkdir_num, strlen(path) + 1, mode, 0, 0, 0};
 	send_info_path(primary_sfd, info, path);
 	send_info_path(secondary_sfd, info, path);
 
 	get_rv(secondary_sfd, true);
-	return get_rv(primary_sfd, true);
+	int ret = get_rv(primary_sfd, true);
+	pthread_mutex_unlock(&mutex);
+	return ret;
 }
 
 static int do_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 					  off_t offset, struct fuse_file_info *fi)
 {
+	pthread_mutex_lock(&mutex);
 	int info[INFO_SIZE] = {readdir_num, strlen(path) + 1, 0, 0, 0, 0};
 	send_info_path(primary_sfd, info, path);
 
@@ -297,6 +337,7 @@ static int do_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 		if (rv[0] == -1)
 		{
 			errno = rv[1];
+			pthread_mutex_unlock(&mutex);
 			return -errno;
 		}
 		struct stat st;
@@ -309,49 +350,124 @@ static int do_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 		read(primary_sfd, rv, sizeof(rv));
 	}
 
+	pthread_mutex_unlock(&mutex);
 	return 0;
 }
 
 static int do_getattr(const char *path, struct stat *stbuf)
 {
+	pthread_mutex_lock(&mutex);
 	int info[INFO_SIZE] = {getattr_num, strlen(path) + 1, 0, 0, 0, 0};
 	send_info_path(primary_sfd, info, path);
 
 	read(primary_sfd, stbuf, sizeof(struct stat));
 
-	int rv =  get_rv(primary_sfd, true);
+	int rv = get_rv(primary_sfd, true);
 	// timer_function(NULL);
+	pthread_mutex_unlock(&mutex);
 	return rv;
 }
 
 static int do_mknod(const char *path, mode_t mode, dev_t rdev)
 {
+	pthread_mutex_lock(&mutex);
 	int info[INFO_SIZE] = {mknod_num, strlen(path) + 1, mode, rdev, 0, 0};
 	send_info_path(primary_sfd, info, path);
 	send_info_path(secondary_sfd, info, path);
 
 	get_rv(secondary_sfd, true);
-	return get_rv(primary_sfd, true);
+	int ret = get_rv(primary_sfd, true);
+	pthread_mutex_unlock(&mutex);
+	return ret;
 }
 
 static int do_utimens(const char *path, const struct timespec ts[2])
 {
+	pthread_mutex_lock(&mutex);
 	int info[INFO_SIZE] = {utimens_num, strlen(path) + 1, ts[0].tv_sec, ts[0].tv_nsec / 1000, ts[1].tv_sec, ts[1].tv_nsec / 1000};
 	send_info_path(primary_sfd, info, path);
 	send_info_path(secondary_sfd, info, path);
 
 	get_rv(secondary_sfd, true);
-	return get_rv(primary_sfd, true);
+	int ret = get_rv(primary_sfd, true);
+	pthread_mutex_unlock(&mutex);
+	return ret;
 }
 
 static int do_truncate(const char *path, off_t size)
 {
+	pthread_mutex_lock(&mutex);
 	int info[INFO_SIZE] = {truncate_num, strlen(path) + 1, size, 0, 0, 0};
 	send_info_path(primary_sfd, info, path);
 	send_info_path(secondary_sfd, info, path);
 
 	get_rv(secondary_sfd, true);
-	return get_rv(primary_sfd, true);
+	int ret = get_rv(primary_sfd, true);
+	pthread_mutex_unlock(&mutex);
+	return ret;
+}
+
+void *timer_function(void *x_void_ptr)
+{
+	int cnt = 0;
+	int info[INFO_SIZE] = {check_num, 0, 0, 0, 0, 0}, rv, prv, srv;
+	while (true)
+	{
+		pthread_mutex_lock(&mutex);
+		send(primary_sfd, info, sizeof(int) * INFO_SIZE, MSG_NOSIGNAL);
+		prv = read(primary_sfd, &rv, sizeof(rv));
+
+		if (prv <= 0)
+		{
+			int tmp = secondary_sfd;
+			secondary_sfd = primary_sfd;
+			primary_sfd = tmp;
+
+			tmp = second_port;
+			second_port = first_port;
+			first_port = tmp;
+		}
+
+		send(secondary_sfd, info, sizeof(int) * INFO_SIZE, MSG_NOSIGNAL);
+		srv = read(secondary_sfd, &rv, sizeof(rv));
+
+		if (srv <= 0)
+		{
+			cnt++;
+			secondary_sfd = get_connection(ip, second_port);
+		}
+		else
+		{
+			cnt = 0;
+		}
+
+		if(cnt >= 10)
+		{
+			int tmp = secondary_sfd;
+			secondary_sfd = hotswap_sfd;
+			hotswap_sfd = tmp;
+
+			tmp = second_port;
+			second_port = hot_port;
+			hot_port = tmp;
+
+			info[0] = send_tar_gz_num;
+			send(primary_sfd, info, sizeof(int) * INFO_SIZE, MSG_NOSIGNAL);
+			char path[32] = "/im.in.that.745.tar.gz";
+			move_file(primary_sfd, secondary_sfd, path);
+			info[0]= recive_tar_gz_num;
+			send(secondary_sfd, info, sizeof(int) * INFO_SIZE, MSG_NOSIGNAL);
+		    pthread_mutex_unlock(&mutex);
+			do_unlink(path);
+			pthread_mutex_lock(&mutex);
+			info[0] = check_num;
+		}
+	    pthread_mutex_unlock(&mutex);
+
+		sleep(1);
+	}
+
+	return NULL;
 }
 
 static struct fuse_operations do_oper = {
@@ -375,9 +491,11 @@ int main(int argc, char *argv[])
 	// umask(0);
 	first_port = 5000;
 	second_port = 5001;
+	hot_port = 5003;
 	primary_sfd = get_connection(ip, first_port);
 	secondary_sfd = get_connection(ip, second_port);
+	hotswap_sfd = get_connection(ip, hot_port);
 	pthread_t timer_thread;
-	// pthread_create(&timer_thread, NULL, timer_function, NULL);
+	pthread_create(&timer_thread, NULL, timer_function, NULL);
 	return fuse_main(argc, argv, &do_oper, NULL);
 }
