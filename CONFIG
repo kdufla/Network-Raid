@@ -4,7 +4,7 @@ cache_replacment = rlu
 timeout = 10
 
 diskname = STORAGE1
-mountpoint = /home/ggvel/Documents/Network-Raid/sa
+mountpoint = /home/vagrant/code/final/sa
 raid = 1
 servers = 127.0.0.1:5000, 127.0.0.1:5001
 hotswap = 127.0.0.1:5003

@@ -27,7 +27,6 @@
 #include "ssyscalls.h"
 #include "logger.h"
 
-#define PATH "/home/vagrant/code/final/ss"
 #define min(a, b) (a < b ? a : b)
 typedef int bool;
 enum

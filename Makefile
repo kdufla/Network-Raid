@@ -11,13 +11,13 @@ clean:
 	rm client server
 
 u:
-	fusermount -u /home/ggvel/Documents/Network-Raid/sa
+	fusermount -u /home/vagrant/code/final/sa
 
 md:
 	gdb --args ./client /home/ggvel/Documents/Network-Raid/sa -o sync_read -f
 
 m:
-	./client /home/ggvel/Documents/Network-Raid/CONFIG
+	./client /home/vagrant/code/final/CONFIG
 
 mf:
 	./hello -f /home/vagrant/code/final/sa
