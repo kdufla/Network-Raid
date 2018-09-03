@@ -27,6 +27,9 @@
 #include "ssyscalls.h"
 #include "logger.h"
 
+static int do_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi);
+static int do_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi);
+
 #define min(a, b) (a < b ? a : b)
 typedef int bool;
 enum
@@ -42,6 +45,7 @@ char *primary_ip, *secondary_ip, *hotswap_ip;
 
 char *stor_name;
 int logfd, timeout;
+bool allow_log;
 
 // char ip[20] = "127.0.0.1";
 
@@ -90,7 +94,7 @@ void move_file(int sfd_from, int sfd_to, const char *path)
 	send_info_path(sfd_from, info, path);
 	read(sfd_from, &stbuf, sizeof(struct stat));
 	get_rv(sfd_from, true);
-	int size = stbuf.st_size, tored, dread, pos = 0;
+	int size = stbuf.st_size, tored, pos = 0;
 	char *buffer = malloc(RWCHUNK);
 
 	int info1[INFO_SIZE] = {unlink_num, strlen(path) + 1, 0, 0, 0, 0};
@@ -104,30 +108,12 @@ void move_file(int sfd_from, int sfd_to, const char *path)
 	while (size > 0)
 	{
 		tored = min(size, RWCHUNK);
-		// read
-		int info3[INFO_SIZE] = {read_num, strlen(path) + 1, tored, pos, 0, 0};
-		send_info_path(sfd_from, info3, path);
-		int rv[2];
-		read(sfd_from, rv, sizeof(rv));
-
-		if (rv[1] == -1)
-		{
-			errno = rv[0];
-			return;
-		}
-
-		if (rv[1] > 0)
-			read(sfd_from, buffer, rv[1]);
-
-		dread = rv[1];
-
-		int info4[INFO_SIZE] = {write_num, strlen(path) + 1, dread, pos, 0, 0};
-		send_info_path(sfd_to, info4, path);
-		send(sfd_to, buffer, size, MSG_NOSIGNAL);
-		get_rv(sfd_to, false);
-
-		size -= dread;
-		pos += dread;
+		allow_log = false;
+		do_read(path, buffer, tored, pos, NULL);
+		do_write(path, buffer, tored, pos, NULL);
+		allow_log = true;
+		size -= tored;
+		pos += tored;
 	}
 }
 
@@ -238,13 +224,40 @@ static int do_open(const char *path, struct fuse_file_info *fi)
 static int do_read(const char *path, char *buf, size_t size, off_t offset,
 				   struct fuse_file_info *fi)
 {
-	pthread_mutex_lock(&mutex);
+	if (allow_log)
+		pthread_mutex_lock(&mutex);
 	int info[INFO_SIZE] = {read_num, strlen(path) + 1, size, offset, 0, 0};
 	send_info_path(primary_sfd, info, path);
-
 	char message[512];
-	snprintf(message, 512, "Read %s", path);
-	log_msg(stor_name, primary_ip, primary_port, message);
+
+	if (allow_log)
+	{
+		snprintf(message, 512, "Read %s", path);
+		log_msg(stor_name, primary_ip, primary_port, message);
+	}
+
+	int pos = 0, cur_size = min(RWCHUNK, size), actual_size, cnt = 0;
+
+	while (size > 0)
+	{
+		int todo[2] = {cur_size, offset + pos};
+		send(primary_sfd, todo, sizeof(todo), MSG_NOSIGNAL);
+
+		read(primary_sfd, &actual_size, sizeof(int));
+		read(primary_sfd, buf + pos, actual_size);
+
+		if (actual_size < cur_size)
+		{
+			cnt += actual_size;
+			break;
+		}
+		size -= cur_size;
+		pos += cur_size;
+		cnt += cur_size;
+		cur_size = min(RWCHUNK, size);
+	}
+	int todo[2] = {0, 0};
+	send(primary_sfd, todo, sizeof(todo), MSG_NOSIGNAL);
 
 	int rv[2];
 	read(primary_sfd, rv, sizeof(rv));
@@ -252,37 +265,60 @@ static int do_read(const char *path, char *buf, size_t size, off_t offset,
 	if (rv[1] == -1)
 	{
 		errno = rv[0];
-		snprintf(message, 512, "Read %s erroe. errno:%d", path, errno);
-		log_msg(stor_name, primary_ip, primary_port, message);
-		pthread_mutex_unlock(&mutex);
+		if (allow_log)
+		{
+			snprintf(message, 512, "Read %s erroe. errno:%d", path, errno);
+			log_msg(stor_name, primary_ip, primary_port, message);
+			pthread_mutex_unlock(&mutex);
+		}
 		return -errno;
 	}
 
-	if (rv[1] > 0)
-		read(primary_sfd, buf, rv[1]);
-
-	pthread_mutex_unlock(&mutex);
-	return rv[1];
+	if (allow_log)
+		pthread_mutex_unlock(&mutex);
+	return cnt;
 }
 
 static int do_write(const char *path, const char *buf, size_t size,
 					off_t offset, struct fuse_file_info *fi)
 {
-	pthread_mutex_lock(&mutex);
-	int info[INFO_SIZE] = {write_num, strlen(path) + 1, size, offset, 0, 0};
+	if (allow_log)
+		pthread_mutex_lock(&mutex);
+	int info[INFO_SIZE] = {write_num, strlen(path) + 1, 0, 0, 0, 0};
 	send_info_path(primary_sfd, info, path);
 	send_info_path(secondary_sfd, info, path);
-	send(primary_sfd, buf, size, MSG_NOSIGNAL);
-	send(secondary_sfd, buf, size, MSG_NOSIGNAL);
 
-	char message[512];
-	snprintf(message, 512, "Write %s", path);
-	log_msg(stor_name, primary_ip, primary_port, message);
-	log_msg(stor_name, secondary_ip, secondary_port, message);
+	int pos = 0, cur_size = min(RWCHUNK, size);
 
+	while (size > 0)
+	{
+		int todo[2] = {cur_size, offset + pos};
+		send(primary_sfd, todo, sizeof(todo), MSG_NOSIGNAL);
+		send(secondary_sfd, todo, sizeof(todo), MSG_NOSIGNAL);
+
+		send(primary_sfd, buf + pos, cur_size, MSG_NOSIGNAL);
+		send(secondary_sfd, buf + pos, cur_size, MSG_NOSIGNAL);
+		size -= cur_size;
+		pos += cur_size;
+		cur_size = min(RWCHUNK, size);
+	}
+	int todo[2] = {0, 0};
+	send(primary_sfd, todo, sizeof(todo), MSG_NOSIGNAL);
+	send(secondary_sfd, todo, sizeof(todo), MSG_NOSIGNAL);
+
+	// send(primary_sfd, buf, size, MSG_NOSIGNAL);
+	// send(secondary_sfd, buf, size, MSG_NOSIGNAL);
+	if (allow_log)
+	{
+		char message[512];
+		snprintf(message, 512, "Write %s", path);
+		log_msg(stor_name, primary_ip, primary_port, message);
+		log_msg(stor_name, secondary_ip, secondary_port, message);
+	}
 	get_rv(secondary_sfd, false);
 	int ret = get_rv(primary_sfd, false);
-	pthread_mutex_unlock(&mutex);
+	if (allow_log)
+		pthread_mutex_unlock(&mutex);
 	return ret;
 }
 
@@ -525,7 +561,7 @@ int a_in_b(int a, int *b, int size)
 	return -1;
 }
 
-void fill_server_with_other_servers(int id)
+void fill_server_with_other_servers(int id, const char *path)
 {
 }
 
@@ -540,7 +576,7 @@ static int do_open5(const char *path, struct fuse_file_info *fi)
 	int empty_server = a_in_b(-ENOENT, rv, num_servers);
 	if (empty_server >= 0)
 	{
-		fill_server_with_other_servers(empty_server);
+		fill_server_with_other_servers(empty_server, path);
 	}
 
 	pthread_mutex_unlock(&mutex);
@@ -554,9 +590,82 @@ static int do_read5(const char *path, char *buf, size_t size, off_t offset,
 	return 0;
 }
 
+int get_parity_index_in_stripe(int stripe)
+{
+	int t_stripe = stripe % num_servers;
+	int last_idx = num_servers - 1;
+	return last_idx - t_stripe;
+}
+
+int get_server_sfd_based_on_chunk(int chunk)
+{
+	int chunks_in_stripe = num_servers - 1;
+	int stripe = chunk / chunks_in_stripe;
+	int parity_idx = get_parity_index_in_stripe(stripe);
+	int chunk_asynch_idx_in_stripe = chunk % chunks_in_stripe;
+	int actul_idx = parity_idx + 1 + chunk_asynch_idx_in_stripe;
+	int actul_idx_mod = actul_idx % num_servers;
+	return sfds[actul_idx_mod];
+}
+
+int get_offset_of_stripe_based_on_chunk(int chunk)
+{
+	int chunks_in_stripe = num_servers - 1;
+	int stripe = chunk / chunks_in_stripe;
+	return stripe * CHUNK_SIZE;
+}
+
+void update_stripe_parity(int stripe) {}
+
+void send_stop_multiple()
+{
+	int i;
+	int todo[2] = {0, 0};
+	for (i = 0; i < num_servers; i++)
+	{
+		send(sfds[i], todo, sizeof(todo), MSG_NOSIGNAL);
+	}
+}
+
 static int do_write5(const char *path, const char *buf, size_t size,
 					 off_t offset, struct fuse_file_info *fi)
 {
+	pthread_mutex_lock(&mutex);
+	int info[INFO_SIZE] = {write_num, strlen(path) + 1, size, offset, 0, 0};
+	send_info_path_multiple(info, path);
+
+	int chunk_n = offset / CHUNK_SIZE;
+	int local_offset = offset % CHUNK_SIZE;
+	int local_size = CHUNK_SIZE - local_offset;
+	local_size = min(size, local_size);
+	int off = 0, i;
+	int start_stripe = chunk_n / (num_servers - 1);
+
+	while (size > 0)
+	{
+		int curr_sfd = get_server_sfd_based_on_chunk(chunk_n);
+		int soff = get_offset_of_stripe_based_on_chunk(chunk_n);
+		int todo[2] = {local_size, soff + local_offset};
+		send(curr_sfd, todo, sizeof(todo), MSG_NOSIGNAL);
+		send(curr_sfd, buf + off, local_size, MSG_NOSIGNAL);
+		size -= local_size;
+		off += local_size;
+		chunk_n++;
+		local_size = min(size, CHUNK_SIZE);
+		local_offset = 0;
+	}
+
+	int end_stripe = chunk_n / (num_servers - 1);
+
+	for (i = start_stripe; i < end_stripe; i++)
+	{
+		update_stripe_parity(i);
+	}
+
+	send_stop_multiple();
+
+	pthread_mutex_unlock(&mutex);
+
 	return 0;
 }
 
@@ -720,6 +829,7 @@ static int do_utimens5(const char *path, const struct timespec ts[2])
 static int do_truncate5(const char *path, off_t size)
 {
 	pthread_mutex_lock(&mutex);
+	// int actul_size =
 	int info[INFO_SIZE] = {truncate_num, strlen(path) + 1, size, 0, 0, 0};
 	send_info_path_multiple(info, path);
 	int rv[num_servers];
@@ -887,10 +997,10 @@ int mount_storage(storage *stor)
 		num_servers = stor->server_cnt;
 
 		int i;
-		sfds = malloc(sizeof(int)*num_servers);
-		ips = malloc(sizeof(char *)*num_servers);
-		ports = malloc(sizeof(int)*num_servers);
-		for(i = 0;i < num_servers;i++)
+		sfds = malloc(sizeof(int) * num_servers);
+		ips = malloc(sizeof(char *) * num_servers);
+		ports = malloc(sizeof(int) * num_servers);
+		for (i = 0; i < num_servers; i++)
 		{
 			ips[i] = stor->servers[i].ip;
 			ports[i] = stor->servers[i].port;
@@ -906,6 +1016,7 @@ int main(int argc, char *argv[])
 	parse(argv[1]);
 	init_logger(get_errorlog());
 	storage *stor;
+	allow_log = true;
 	log_msg("none", "0.0.0.0", 0, "logger init");
 
 	timeout = get_timeout();

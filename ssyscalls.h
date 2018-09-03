@@ -20,9 +20,10 @@ typedef enum syscall_num
 } syscall_num;
 
 #define HASH_ERROR -7
-#define RWCHUNK 4096
+#define RWCHUNK 16384
 #define min(a, b) (a < b ? a : b)
 #define max(a, b) (a > b ? a : b)
 #define HASH_CHUNK 32768
 #define INFO_SIZE 6
 #define MAX_PATH_LEN 1024
+#define CHUNK_SIZE 4096

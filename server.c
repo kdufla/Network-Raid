@@ -103,25 +103,33 @@ void sys_read(int cfd, int len, int size, int offset)
 	int fd = open(buff, O_RDONLY);
 
 	// char buf[size];
-	char *buf = malloc(size);
-	int res, rv[2];
+	char *buf = malloc(CHUNK_SIZE);
 
-	res = pread(fd, buf, size, offset);
-	rv[0] = errno;
-	if (res == -1)
+	int szof[2] = {0, 0}, res = 0, rv[2] = {0, 0};
+	read(cfd, &szof, sizeof(szof));
+	size = szof[0];
+	offset = szof[1];
+
+	while (size)
 	{
-		rv[1] = -1;
-	}
-	else
-	{
-		rv[1] = res;
+		// read(cfd, buf, size);
+		res = pread(fd, buf, size, offset);
+		if (res == -1)
+		{
+			rv[1] = -1;
+			rv[0] = errno;
+			res = 0;
+		}
+		write(cfd, &res, sizeof(res));
+		write(cfd, buf, res);
+
+		read(cfd, &szof, sizeof(szof));
+		size = szof[0];
+		offset = szof[1];
 	}
 
 	write(cfd, rv, sizeof(rv));
 	printf("read fd:%d size:%d off:%d res:%d\n", fd, size, offset, res);
-
-	if (rv[1] > 0)
-		write(cfd, buf, rv[1]);
 
 	close(fd);
 	free(buf);
@@ -133,15 +141,29 @@ void sys_write(int cfd, int len, int size, int offset)
 	strcpy(buff, mpath);
 	read(cfd, buff + strlen(mpath), len);
 	int fd = open(buff, O_RDWR);
+	char *buf = malloc(CHUNK_SIZE);
 
-	char *buf = malloc(size);
-	read(cfd, buf, size);
+	int szof[2] = {0, 0}, cnt = 0;
+	read(cfd, &szof, sizeof(szof));
+	size = szof[0];
+	offset = szof[1];
+
+	while (size)
+	{
+		read(cfd, buf, size);
+		cnt += pwrite(fd, buf, size, offset);
+		read(cfd, &szof, sizeof(szof));
+		size = szof[0];
+		offset = szof[1];
+	}
+
+	// read(cfd, buf, size);
 
 	int rv[2] = {0, 0};
 	errno = 0;
-	rv[1] = pwrite(fd, buf, size, offset);
+	rv[1] = cnt;
 
-	if (rv[1] == -1)
+	if (rv[1] < 0)
 	{
 		rv[0] = errno;
 	}
@@ -413,7 +435,6 @@ void sys_send_tar_gz(int cfd)
 
 	// write(cfd, &size, sizeof(size));
 
-
 	// int i, dread, tored, pos = 0, space = min(size, RWCHUNK);
 	// char *buffer = malloc(space);
 
@@ -516,7 +537,7 @@ int main(int argc, char *argv[])
 	strcpy(mpath, argv[3]);
 	sscanf(argv[2], "%i", &port);
 	printf("%s\n", mpath);
-	char *ip=argv[1];
+	char *ip = argv[1];
 
 	sfd = socket(AF_INET, SOCK_STREAM, 0);
 	int optval = 1;
