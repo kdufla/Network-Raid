@@ -1,3 +1,4 @@
+#pragma once
 
 typedef enum syscall_num
 {
@@ -27,3 +28,11 @@ typedef enum syscall_num
 #define INFO_SIZE 6
 #define MAX_PATH_LEN 1024
 #define CHUNK_SIZE 4096
+
+#define min(a, b) (a < b ? a : b)
+typedef int bool;
+enum
+{
+	false,
+	true
+};
