@@ -6,6 +6,7 @@
 #include "ssyscalls.h"
 #include "logger.h"
 #include "raid1.h"
+#include "raid5.h"
 
 int mount_storage(storage *stor)
 {
@@ -17,7 +18,13 @@ int mount_storage(storage *stor)
 	argv[3] = strdup("sync_read");
 	argv[4] = strdup("-f");
 
-	return main_raid1(argc, argv, stor);
+	if (stor->raid == 1)
+		return main_raid1(argc, argv, stor);
+
+	if (stor->raid == 5)
+		return main_raid5(argc, argv, stor);
+
+	return 1;
 }
 
 int main(int argc, char *argv[])
@@ -26,7 +33,6 @@ int main(int argc, char *argv[])
 	init_logger(get_errorlog());
 	storage *stor;
 	log_msg("none", "0.0.0.0", 0, "logger init");
-
 
 	int i;
 	for (i = 0; i < get_storage_cnt(); i++)

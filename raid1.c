@@ -69,7 +69,8 @@ int get_rv(int sfd, bool return_zero)
 	}
 }
 
-int do_read_custom(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi, int sfd){
+int do_read_custom(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi, int sfd)
+{
 	int info[INFO_SIZE] = {read_num, strlen(path) + 1, size, offset, 0, 0};
 	send_info_path(sfd, info, path);
 	char message[512];
@@ -121,7 +122,8 @@ int do_read_custom(const char *path, char *buf, size_t size, off_t offset, struc
 	return cnt;
 }
 
-int do_write_custom(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi, int sfd){
+int do_write_custom(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi, int sfd)
+{
 	int info[INFO_SIZE] = {write_num, strlen(path) + 1, 0, 0, 0, 0};
 	send_info_path(sfd, info, path);
 
@@ -150,7 +152,6 @@ int do_write_custom(const char *path, const char *buf, size_t size, off_t offset
 	return ret;
 }
 
-
 void move_file(int sfd_from, int sfd_to, const char *path)
 {
 	struct stat stbuf;
@@ -172,12 +173,12 @@ void move_file(int sfd_from, int sfd_to, const char *path)
 	while (size > 0)
 	{
 		tored = min(size, RWCHUNK);
-    allow_log = false;
+		allow_log = false;
 		do_read_custom(path, buffer, tored, pos, NULL, sfd_from);
 		do_write_custom(path, buffer, tored, pos, NULL, sfd_to);
 		allow_log = true;
 		size -= tored;
- 		pos += tored;
+		pos += tored;
 	}
 }
 
@@ -287,22 +288,22 @@ static int do_open(const char *path, struct fuse_file_info *fi)
 
 static int do_read(const char *path, char *buf, size_t size, off_t offset,
 				   struct fuse_file_info *fi)
-  {
-		pthread_mutex_lock(&mutex);
-  	int rv = do_read_custom(path, buf, size, offset, fi, primary_sfd);
-		pthread_mutex_unlock(&mutex);
-		return rv;
+{
+	pthread_mutex_lock(&mutex);
+	int rv = do_read_custom(path, buf, size, offset, fi, primary_sfd);
+	pthread_mutex_unlock(&mutex);
+	return rv;
 }
 
 static int do_write(const char *path, const char *buf, size_t size,
 					off_t offset, struct fuse_file_info *fi)
 {
 	pthread_mutex_lock(&mutex);
-	int rv  = do_write_custom(path, buf, size, offset, fi, primary_sfd);
+	int rv = do_write_custom(path, buf, size, offset, fi, primary_sfd);
 	do_write_custom(path, buf, size, offset, fi, secondary_sfd);
 	pthread_mutex_unlock(&mutex);
 	return rv;
-	}
+}
 
 static int do_release(const char *path, struct fuse_file_info *fi)
 {
@@ -593,37 +594,37 @@ static struct fuse_operations do_oper = {
 	.truncate = do_truncate,
 };
 
-int main_raid1(int argc, char *argv[], storage* stor)
+int main_raid1(int argc, char *argv[], storage *stor)
 {
-		stor_name = strdup(stor->name);
-    timeout = get_timeout();
+	stor_name = strdup(stor->name);
+	timeout = get_timeout();
 
-    primary_port = stor->servers[0].port;
-  	secondary_port = stor->servers[1].port;
-  	hotswap_port = stor->hotswap.port;
+	primary_port = stor->servers[0].port;
+	secondary_port = stor->servers[1].port;
+	hotswap_port = stor->hotswap.port;
 
-  	primary_ip = stor->servers[0].ip;
-  	secondary_ip = stor->servers[1].ip;
-  	hotswap_ip = stor->hotswap.ip;
+	primary_ip = stor->servers[0].ip;
+	secondary_ip = stor->servers[1].ip;
+	hotswap_ip = stor->hotswap.ip;
 
-  	primary_sfd = get_connection(primary_ip, primary_port);
-  	if (primary_sfd > 0)
-  	{
-  		log_msg(stor_name, primary_ip, primary_port, "Connected");
-  	}
-  	secondary_sfd = get_connection(secondary_ip, secondary_port);
-  	if (secondary_sfd > 0)
-  	{
-  		log_msg(stor_name, secondary_ip, secondary_port, "Connected");
-  	}
-  	hotswap_sfd = get_connection(hotswap_ip, hotswap_port);
-  	if (hotswap_sfd > 0)
-  	{
-  		log_msg(stor_name, hotswap_ip, hotswap_port, "Connected");
-  	}
+	primary_sfd = get_connection(primary_ip, primary_port);
+	if (primary_sfd > 0)
+	{
+		log_msg(stor_name, primary_ip, primary_port, "Connected");
+	}
+	secondary_sfd = get_connection(secondary_ip, secondary_port);
+	if (secondary_sfd > 0)
+	{
+		log_msg(stor_name, secondary_ip, secondary_port, "Connected");
+	}
+	hotswap_sfd = get_connection(hotswap_ip, hotswap_port);
+	if (hotswap_sfd > 0)
+	{
+		log_msg(stor_name, hotswap_ip, hotswap_port, "Connected");
+	}
 
-  	pthread_t timer_thread;
-  	pthread_create(&timer_thread, NULL, timer_function, NULL);
+	pthread_t timer_thread;
+	pthread_create(&timer_thread, NULL, timer_function, NULL);
 
-  	return fuse_main(argc, argv, &do_oper, NULL);
+	return fuse_main(argc, argv, &do_oper, NULL);
 }
