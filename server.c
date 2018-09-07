@@ -57,6 +57,7 @@ void get_hash(int fd, unsigned char *storage, char *path)
 
 void sys_open(int cfd, int len, int flags)
 {
+	errno = 0;
 	char buff[MAX_PATH_LEN];
 	strcpy(buff, mpath);
 	read(cfd, buff + strlen(mpath), len);
@@ -97,51 +98,75 @@ void sys_open(int cfd, int len, int flags)
 
 void sys_read(int cfd, int len, int size, int offset)
 {
+	errno = 0;
 	char buff[MAX_PATH_LEN];
 	strcpy(buff, mpath);
 	read(cfd, buff + strlen(mpath), len);
 	int fd = open(buff, O_RDONLY);
 
 	// char buf[size];
-	char *buf = malloc(size);
-	int res, rv[2];
+	char buf[CHUNK_SIZE];
 
-	res = pread(fd, buf, size, offset);
-	rv[0] = errno;
-	if (res == -1)
+	int szof[2] = {0, 0}, res = 0, rv[2] = {0, 0};
+	read(cfd, &szof, sizeof(szof));
+	size = szof[0];
+	offset = szof[1];
+
+	while (size)
 	{
-		rv[1] = -1;
-	}
-	else
-	{
-		rv[1] = res;
+		// read(cfd, buf, size);
+		res = pread(fd, buf, size, offset);
+		if (res == -1)
+		{
+			rv[1] = -1;
+			rv[0] = errno;
+			res = 0;
+		}
+		write(cfd, &res, sizeof(res));
+		write(cfd, buf, res);
+
+		read(cfd, &szof, sizeof(szof));
+		size = szof[0];
+		offset = szof[1];
 	}
 
 	write(cfd, rv, sizeof(rv));
 	printf("read fd:%d size:%d off:%d res:%d\n", fd, size, offset, res);
 
-	if (rv[1] > 0)
-		write(cfd, buf, rv[1]);
-
 	close(fd);
-	free(buf);
+	// free(buf);
 }
 
 void sys_write(int cfd, int len, int size, int offset)
 {
+	errno = 0;
 	char buff[MAX_PATH_LEN];
 	strcpy(buff, mpath);
 	read(cfd, buff + strlen(mpath), len);
 	int fd = open(buff, O_RDWR);
+	char buf[CHUNK_SIZE];
 
-	char *buf = malloc(size);
-	read(cfd, buf, size);
+	int szof[2] = {0, 0}, cnt = 0;
+	read(cfd, &szof, sizeof(szof));
+	size = szof[0];
+	offset = szof[1];
+
+	while (size)
+	{
+		read(cfd, buf, size);
+		cnt += pwrite(fd, buf, size, offset);
+		read(cfd, &szof, sizeof(szof));
+		size = szof[0];
+		offset = szof[1];
+	}
+
+	// read(cfd, buf, size);
 
 	int rv[2] = {0, 0};
 	errno = 0;
-	rv[1] = pwrite(fd, buf, size, offset);
+	rv[1] = cnt;
 
-	if (rv[1] == -1)
+	if (rv[1] < 0)
 	{
 		rv[0] = errno;
 	}
@@ -156,11 +181,12 @@ void sys_write(int cfd, int len, int size, int offset)
 	printf("write fd:%d size:%d off:%d res:%d errno:%s\n", fd, size, offset, rv[1], strerror(errno));
 	write(cfd, rv, sizeof(rv));
 	close(fd);
-	free(buf);
+	// free(buf);
 }
 
 void sys_release(int cfd, int len)
 {
+	errno = 0;
 	char buff[MAX_PATH_LEN];
 	strcpy(buff, mpath);
 	read(cfd, buff + strlen(mpath), len);
@@ -179,6 +205,7 @@ void sys_release(int cfd, int len)
 
 void sys_rename(int cfd, int flen, int tlen)
 {
+	errno = 0;
 	char fbuff[MAX_PATH_LEN];
 	strcpy(fbuff, mpath);
 	read(cfd, fbuff + strlen(mpath), flen);
@@ -201,6 +228,7 @@ void sys_rename(int cfd, int flen, int tlen)
 
 void sys_unlink(int cfd, int len)
 {
+	errno = 0;
 	char buff[MAX_PATH_LEN];
 	strcpy(buff, mpath);
 	read(cfd, buff + strlen(mpath), len);
@@ -219,6 +247,7 @@ void sys_unlink(int cfd, int len)
 
 void sys_rmdir(int cfd, int len)
 {
+	errno = 0;
 	char buff[MAX_PATH_LEN];
 	strcpy(buff, mpath);
 	read(cfd, buff + strlen(mpath), len);
@@ -237,6 +266,7 @@ void sys_rmdir(int cfd, int len)
 
 void sys_mkdir(int cfd, int len, mode_t mode)
 {
+	errno = 0;
 	char buff[MAX_PATH_LEN];
 	strcpy(buff, mpath);
 	read(cfd, buff + strlen(mpath), len);
@@ -255,6 +285,7 @@ void sys_mkdir(int cfd, int len, mode_t mode)
 
 void sys_readdir(int cfd, int len)
 {
+	errno = 0;
 	char buff[MAX_PATH_LEN];
 	strcpy(buff, mpath);
 	read(cfd, buff + strlen(mpath), len);
@@ -289,6 +320,7 @@ void sys_readdir(int cfd, int len)
 
 void sys_getattr(int cfd, int len)
 {
+	errno = 0;
 	char buff[MAX_PATH_LEN];
 	strcpy(buff, mpath);
 	read(cfd, buff + strlen(mpath), len);
@@ -310,6 +342,7 @@ void sys_getattr(int cfd, int len)
 void sys_mknod(int cfd, int len, mode_t mode, dev_t rdev)
 {
 
+	errno = 0;
 	char buff[MAX_PATH_LEN];
 	strcpy(buff, mpath);
 	read(cfd, buff + strlen(mpath), len);
@@ -350,6 +383,7 @@ void sys_mknod(int cfd, int len, mode_t mode, dev_t rdev)
 
 void sys_utimens(int cfd, int len, long t0s, long t0ns, long t1s, long t1ns)
 {
+	errno = 0;
 	char buff[MAX_PATH_LEN];
 	strcpy(buff, mpath);
 	read(cfd, buff + strlen(mpath), len);
@@ -372,6 +406,7 @@ void sys_utimens(int cfd, int len, long t0s, long t0ns, long t1s, long t1ns)
 
 void sys_truncate(int cfd, int len, int size)
 {
+	errno = 0;
 	char buff[MAX_PATH_LEN];
 	strcpy(buff, mpath);
 	read(cfd, buff + strlen(mpath), len);
@@ -397,7 +432,7 @@ void sys_send_tar_gz(int cfd)
 {
 
 	char command[MAX_PATH_LEN];
-	snprintf(command, MAX_PATH_LEN, "cd %s && tar -zcvf im.in.that.745.tar.gz .", mpath);
+	snprintf(command, MAX_PATH_LEN, "cd %s && tar --xattrs -zcvf im.in.that.745.tar.gz .", mpath);
 	printf("com: %s\n", command);
 	system(command);
 
@@ -412,7 +447,6 @@ void sys_send_tar_gz(int cfd)
 	// int size = st.st_size;
 
 	// write(cfd, &size, sizeof(size));
-
 
 	// int i, dread, tored, pos = 0, space = min(size, RWCHUNK);
 	// char *buffer = malloc(space);
@@ -436,7 +470,7 @@ void sys_send_tar_gz(int cfd)
 void sys_recive_tar_gz(int cfd)
 {
 	char command[MAX_PATH_LEN];
-	snprintf(command, MAX_PATH_LEN, "cd %s && tar -xvzf im.in.that.745.tar.gz && rm im.in.that.745.tar.gz", mpath);
+	snprintf(command, MAX_PATH_LEN, "cd %s && tar --xattrs -xvzf im.in.that.745.tar.gz && rm im.in.that.745.tar.gz", mpath);
 	printf("com: %s\n", command);
 	system(command);
 }
@@ -516,7 +550,7 @@ int main(int argc, char *argv[])
 	strcpy(mpath, argv[3]);
 	sscanf(argv[2], "%i", &port);
 	printf("%s\n", mpath);
-	char *ip=argv[1];
+	char *ip = argv[1];
 
 	sfd = socket(AF_INET, SOCK_STREAM, 0);
 	int optval = 1;
