@@ -18,12 +18,13 @@ int mount_storage(storage *stor)
 	argv[3] = strdup("sync_read");
 	argv[4] = strdup("-f");
 
-	if (stor->raid == 1)
+	if (stor->raid == 1){
 		return main_raid1(argc, argv, stor);
-
-	if (stor->raid == 5)
+}else{
+	if (stor->raid == 5){
 		return main_raid5(argc, argv, stor);
-
+}
+}
 	return 1;
 }
 

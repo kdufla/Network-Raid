@@ -35,3 +35,9 @@ enum
 	false,
 	true
 };
+
+typedef int cache_mode;
+enum{
+	LRU,
+	SECOND_CHANCE
+};

@@ -102,7 +102,7 @@ void sys_read(int cfd, int len, int size, int offset)
 	char buff[MAX_PATH_LEN];
 	strcpy(buff, mpath);
 	read(cfd, buff + strlen(mpath), len);
-	int fd = open(buff, O_RDONLY);
+	int fd = open(buff, O_RDONLY), cnt=0;
 
 	// char buf[size];
 	char buf[CHUNK_SIZE];
@@ -122,6 +122,7 @@ void sys_read(int cfd, int len, int size, int offset)
 			rv[0] = errno;
 			res = 0;
 		}
+		cnt +=res;
 		write(cfd, &res, sizeof(res));
 		write(cfd, buf, res);
 
@@ -131,7 +132,7 @@ void sys_read(int cfd, int len, int size, int offset)
 	}
 
 	write(cfd, rv, sizeof(rv));
-	printf("read fd:%d size:%d off:%d res:%d\n", fd, size, offset, res);
+	printf("read fd:%d size:%d off:%d res:%d\n", fd, cnt, offset, res);
 
 	close(fd);
 	// free(buf);

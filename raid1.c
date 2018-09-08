@@ -21,6 +21,7 @@
 #include "parse.h"
 #include "ssyscalls.h"
 #include "logger.h"
+#include "cache.h"
 
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 int primary_sfd, secondary_sfd, hotswap_sfd;
@@ -81,25 +82,39 @@ int do_read_custom(const char *path, char *buf, size_t size, off_t offset, struc
 		log_msg(stor_name, primary_ip, primary_port, message);
 	}
 
-	int pos = 0, cur_size = min(CHUNK_SIZE, size), actual_size, cnt = 0;
+	int chunk_n = offset / CHUNK_SIZE;
+	int local_offset = offset % CHUNK_SIZE;
+	int cur_size = CHUNK_SIZE - local_offset;
+	cur_size = min(size, cur_size);
+	int pos = 0, actual_size, cnt = 0;
+	char buffer[CHUNK_SIZE];
+
 
 	while (size > 0)
 	{
-		int todo[2] = {cur_size, offset + pos};
-		send(sfd, todo, sizeof(todo), MSG_NOSIGNAL);
+		if(!read_from_cache(path, chunk_n, buf + pos, local_offset)){
 
-		read(sfd, &actual_size, sizeof(int));
-		read(sfd, buf + pos, actual_size);
+			int todo[2] = {CHUNK_SIZE, offset + pos - local_offset};
+			send(sfd, todo, sizeof(todo), MSG_NOSIGNAL);
 
-		if (actual_size < cur_size)
-		{
-			cnt += actual_size;
-			break;
+			read(sfd, &actual_size, sizeof(int));
+			read(sfd, buffer, actual_size);
+			memcpy(buf + pos, buffer + local_offset, actual_size);
+			if(actual_size > 0)
+				write_in_cache(path, chunk_n, buffer);
+
+			if (actual_size < cur_size)
+			{
+				cnt += actual_size;
+				break;
+			}
 		}
 		size -= cur_size;
 		pos += cur_size;
 		cnt += cur_size;
-		cur_size = min(CHUNK_SIZE, size);
+		cur_size = CHUNK_SIZE;
+		local_offset = 0;
+		chunk_n++;
 	}
 	int todo[2] = {0, 0};
 	send(sfd, todo, sizeof(todo), MSG_NOSIGNAL);
@@ -127,17 +142,23 @@ int do_write_custom(const char *path, const char *buf, size_t size, off_t offset
 	int info[INFO_SIZE] = {write_num, strlen(path) + 1, 0, 0, 0, 0};
 	send_info_path(sfd, info, path);
 
-	int pos = 0, cur_size = min(CHUNK_SIZE, size);
+	int chunk_n = offset / CHUNK_SIZE;
+	int local_offset = offset % CHUNK_SIZE;
+	int local_size = CHUNK_SIZE - local_offset;
+	local_size = min(size, local_size);
+	int pos = 0;
 
 	while (size > 0)
 	{
-		int todo[2] = {cur_size, offset + pos};
+		int todo[2] = {local_size, offset + pos};
 		send(sfd, todo, sizeof(todo), MSG_NOSIGNAL);
 
-		send(sfd, buf + pos, cur_size, MSG_NOSIGNAL);
-		size -= cur_size;
-		pos += cur_size;
-		cur_size = min(CHUNK_SIZE, size);
+		send(sfd, buf + pos, local_size, MSG_NOSIGNAL);
+
+		size -= local_size;
+		pos += local_size;
+		local_size = min(CHUNK_SIZE, size);
+		remove_from_cache(path, chunk_n++);
 	}
 	int todo[2] = {0, 0};
 	send(sfd, todo, sizeof(todo), MSG_NOSIGNAL);
@@ -596,6 +617,15 @@ static struct fuse_operations do_oper = {
 
 int main_raid1(int argc, char *argv[], storage *stor)
 {
+	int csz = get_cache_size();
+	cache_mode mode;
+	char *crep = get_cache_replacement();
+	if(!strcmp(crep, "lru")){
+		mode = LRU;
+	}else{
+		mode = SECOND_CHANCE;
+	}
+	cache_init(csz, mode);
 	stor_name = strdup(stor->name);
 	timeout = get_timeout();
 

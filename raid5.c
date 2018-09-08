@@ -380,14 +380,17 @@ static int do_getattr5(const char *path, struct stat *stbuf)
 	// pthread_mutex_lock(&mutex5);
 	int info[INFO_SIZE] = {getattr_num, strlen(path) + 1, 0, 0, 0, 0}, i;
 	send_info_path_multiple(info, path);
+	printf("lalalalalxxxxxa: %s\n", path);
 
 	read(sfds[0], stbuf, sizeof(struct stat));
+	printf("laaaaaaaalalalala: %s\n", path);
 
 	struct stat stats[num_servers];
 	for (i = 1; i < num_servers; i++)
 	{
 		read(sfds[i], &stats[i], sizeof(struct stat));
 	}
+	printf("lssssalalala: %s\n", path);
 
 	off_t size = 0;
 	for (i = 1; i < num_servers; i++)
@@ -405,9 +408,11 @@ static int do_getattr5(const char *path, struct stat *stbuf)
 	// stats[0].st_blksize = cnt;
 
 	// memcpy(stbuf, &stats[0], sizeof(struct stat));
+	printf("lalalalalxxxzxzsdadadaxxxxxa: %s\n", path);
 
 	int rv[num_servers];
 	get_rv_multiple(rv, true);
+	printf("lalzykkkkkxxa: %s\n", path);
 
 	// char message[512];
 	// snprintf(message, 512, "Get attribute %s", path);
