@@ -39,5 +39,6 @@ enum
 typedef int cache_mode;
 enum{
 	LRU,
-	SECOND_CHANCE
+	SECOND_CHANCE,
+	MRU
 };

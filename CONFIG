@@ -1,10 +1,10 @@
 errorlog = /home/vagrant/code/final/log_file
-cache_size = 4K
-cache_replacment = lru
+cache_size = 1K
+cache_replacment = mru
 timeout = 10
 
 diskname = STORAGE1
 mountpoint = /home/vagrant/code/final/sa
-raid = 5
+raid = 1
 servers = 127.0.0.1:5000, 127.0.0.1:5001, 127.0.0.1:5002
 hotswap = 127.0.0.1:5003

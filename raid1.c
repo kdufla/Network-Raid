@@ -623,7 +623,11 @@ int main_raid1(int argc, char *argv[], storage *stor)
 	if(!strcmp(crep, "lru")){
 		mode = LRU;
 	}else{
-		mode = SECOND_CHANCE;
+		if(!strcmp(crep, "mru")){
+			mode = MRU;
+		}else{
+			mode = SECOND_CHANCE;
+		}
 	}
 	cache_init(csz, mode);
 	stor_name = strdup(stor->name);

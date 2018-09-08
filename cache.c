@@ -54,6 +54,18 @@ int lru_evict(){
   return idx;
 }
 
+int mru_evict(){
+  int i, max =0, idx;
+  for (i = 0; i < chunk_cnt; i++) {
+    if(cache_data[i].accessed > max && cache_data[i].accessed > 0){
+      max = cache_data[i].accessed;
+      idx = i;
+    }
+  }
+  free(cache_data[idx].path);
+  return idx;
+}
+
 void sc_write(const char *path, int index, char *buffer){
   int idx = get_free_idx();
   if(idx == -1){
@@ -68,10 +80,13 @@ void sc_write(const char *path, int index, char *buffer){
   memcpy(cache+CHUNK_SIZE*idx, buffer, CHUNK_SIZE);
 }
 
-void lru_write(const char *path, int index, char *buffer){
+void ru_write(const char *path, int index, char *buffer){
   int idx = get_free_idx();
   if(idx == -1){
-    idx = lru_evict();
+    if(mode == LRU)
+      idx = lru_evict();
+    else
+      idx = mru_evict();
   }
 
   cache_data[idx].accessed = time(NULL);
@@ -83,8 +98,8 @@ void lru_write(const char *path, int index, char *buffer){
 }
 
 void write_in_cache(const char *path, int index, char *buffer) {
-  if(mode == LRU){
-    lru_write(path, index, buffer);
+  if(mode == LRU || mode == MRU){
+    ru_write(path, index, buffer);
   }else{
     sc_write(path, index, buffer);
   }
@@ -104,7 +119,7 @@ bool sc_read(const char *path, int index, char *buffer, int off){
   return false;
 }
 
-bool lru_read(const char *path, int index, char *buffer, int off){
+bool ru_read(const char *path, int index, char *buffer, int off){
   int i;
   for (i = 0; i < chunk_cnt; i++) {
     if(cache_data[i].index == index && cache_data[i].in_use){
@@ -119,8 +134,8 @@ bool lru_read(const char *path, int index, char *buffer, int off){
 }
 
 bool read_from_cache(const char *path, int index, char *buffer, int off){
-  if(mode == LRU){
-    return lru_read(path, index, buffer, off);
+  if(mode == LRU || mode == MRU){
+    return ru_read(path, index, buffer, off);
   }else{
     return sc_read(path, index, buffer, off);
   }
